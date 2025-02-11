@@ -19,15 +19,13 @@ from utils import (
 bot_router = Router()
 
 data_storage = {}
-user_id_counter = 0
 
-async def store_user_data(user_data):
+async def store_user_data(user_id, user_data):
     temp = await get_weather(user_data["city"])
     water_target = get_water_goal(user_data["weight"], user_data["activity_minutes"], temp)
     calorie_target = get_cals_goal(user_data["weight"], user_data["activity_minutes"], user_data["height"], user_data["age"])
 
-    global user_id_counter, data_storage
-    data_storage[user_id_counter] = {
+    data_storage[user_id] = {
         **user_data,
         "water_goal": water_target,
         "calories_goal": calorie_target,
@@ -38,7 +36,11 @@ async def store_user_data(user_data):
 
 @bot_router.message(Command("start"))
 async def welcome_user(message: Message):
-    await message.reply("Приветствую! Я ваш помощник по здоровому образу жизни.")
+    user_id = message.from_user.id
+    if user_id in data_storage:
+        del data_storage[user_id]
+
+    await message.reply("Приветствую! Я ваш помощник по здоровому образу жизни.\nДля начала установите профиль с помощью /set_profile")
 
 @bot_router.message(Command("set_profile"))
 async def request_weight(message: Message, state: FSMContext):
@@ -95,25 +97,42 @@ async def handle_activity(message: Message, state: FSMContext):
 
 @bot_router.message(Form.city)
 async def handle_city(message: Message, state: FSMContext):
+    user_id = message.from_user.id
     await state.update_data(city=message.text)
     await message.answer("Ваши параметры сохранены!")
+
     user_data = await state.get_data()
-    await store_user_data(user_data)
+    await store_user_data(user_id, user_data)
+
     await state.clear()
+
 
 @bot_router.message(Command("log_water"))
 async def track_water_intake(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+
+    if user_id not in data_storage:
+        await message.reply("Ошибка: профиль не найден. Сначала установите его с помощью /set_profile.")
+        return
+
     try:
         consumed_water = float(command.args)
     except (AttributeError, ValueError):
         await message.reply("Введите корректное количество выпитой воды.")
         return
 
-    data_storage[user_id_counter]["logged_water"] += consumed_water
-    await message.answer(f'Всего выпито: {data_storage[user_id_counter]["logged_water"]} мл. Цель: {data_storage[user_id_counter]["water_goal"]} мл.')
+    data_storage[user_id]["logged_water"] += consumed_water
+    await message.answer(f'Всего выпито: {data_storage[user_id]["logged_water"]} мл. Цель: {data_storage[user_id]["water_goal"]} мл.')
+
 
 @bot_router.message(Command("log_food"))
 async def track_food_intake(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+
+    if user_id not in data_storage:
+        await message.reply("Ошибка: профиль не найден. Сначала установите его с помощью /set_profile.")
+        return
+
     try:
         food_name, weight = command.args.split(" ")
         weight = float(weight)
@@ -121,12 +140,22 @@ async def track_food_intake(message: Message, command: CommandObject):
         await message.reply("Введите корректные данные о продукте и его весе.")
         return
 
-    calorie_value = await get_cals(food_name, weight)
-    data_storage[user_id_counter]["logged_calories"] += calorie_value
-    await message.answer(f"{food_name} - {weight} г. : {calorie_value} ккал.")
+    try:
+        calorie_value = await get_cals(food_name, weight)
+        data_storage[user_id]["logged_calories"] += calorie_value
+        await message.answer(f"{food_name} - {weight} г. : {calorie_value} ккал.")
+    except Exception:
+        await message.reply("Ошибка при получении данных о калорийности. Попробуйте снова.")
+
 
 @bot_router.message(Command("log_workout"))
 async def track_workout(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+
+    if user_id not in data_storage:
+        await message.reply("Ошибка: профиль не найден. Сначала установите его с помощью /set_profile.")
+        return
+
     try:
         workout, duration = command.args.split(" ")
         duration = float(duration)
@@ -134,14 +163,16 @@ async def track_workout(message: Message, command: CommandObject):
         await message.reply("Введите корректные данные о тренировке.")
         return
 
-    data_storage[user_id_counter]["burned_calories"] += 300
+    data_storage[user_id]["burned_calories"] += 300
     additional_water = f" Дополнительно выпейте {200 * (duration // 30)} мл воды." if duration >= 30 else ""
     await message.answer(f"{workout} {duration} минут — 300 ккал.{additional_water}")
 
 @bot_router.message(Command("check_progress"))
 async def show_progress(message: Message):
+    user_id = message.from_user.id
+
     try:
-        user_data = data_storage[user_id_counter]
+        user_data = data_storage[user_id]
 
         await message.answer(
             water_progress_template.format(
